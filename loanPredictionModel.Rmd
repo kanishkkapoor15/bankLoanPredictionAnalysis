@@ -1,0 +1,367 @@
+---
+title: "loanPredictionModel"
+author: "Kanishk Kapoor"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library("dplyr")
+library("tidyr")
+library("caret")
+library("rpart")
+library("rpart.plot")
+library("ggplot2")
+library("car")
+library("ROSE")
+library("randomForest")
+library("pROC")
+```
+
+### Data Loading & Cleaning
+```{r}
+client_data <- read.csv("bankloans.csv",stringsAsFactors = FALSE)
+```
+
+```{r}
+head(client_data)
+summary(client_data)
+str(client_data)
+```
+
+```{r}
+colSums(is.na(client_data))
+```
+
+### Data Processing
+
+```{r}
+client_data$default <- as.factor(client_data$default)
+```
+```{r}
+client_data[, c("income", "debtinc", "creddebt", "othdebt")] <- scale(client_data[,c("income", "debtinc", "creddebt", "othdebt")])
+```
+
+```{r}
+str(client_data)
+```
+### T-Test
+```{r}
+defaulters <- client_data %>% filter( default == 1)
+non_defaulters <- client_data %>% filter( default == 0)
+```
+
+```{r}
+# T-test for income
+t_income <- t.test(defaulters$income, non_defaulters$income, var.equal = TRUE)
+print(t_income)
+
+#T test for debt to income ratio
+t_debtinc <- t.test(defaulters$debtinc, non_defaulters$debtinc, var.equal = TRUE)
+print(t_debtinc)
+
+#T test for credit to debt ratio
+t_creddebt <- t.test(defaulters$creddebt, non_defaulters$creddebt, var.equal = TRUE)
+print(t_creddebt)
+
+#T test for other debt
+t_othdebt <- t.test(defaulters$othdebt, non_defaulters$othdebt, var.equal = TRUE)
+print(t_othdebt)
+
+```
+1️⃣ Income
+	•	t = -1.8797, p-value = 0.06056
+	•	p-value > 0.05 → Not statistically significant
+✅ Conclusion: Income may not be a strong predictor for loan default in our dataset.
+
+2️⃣ Debt-to-Income Ratio (debtinc)
+	•	t = 11.175, p-value < 2.2e-16
+	•	p-value < 0.05 → Highly significant
+✅ Conclusion: Debt-to-income ratio is a strong predictor of default.
+
+3️⃣ Credit-to-Debt Ratio (creddebt)
+	•	t = 6.6688, p-value = 5.249e-11
+	•	p-value < 0.05 → Highly significant
+✅ Conclusion: Credit-to-debt ratio is also a strong predictor of default.
+
+4️⃣ Other Debts (othdebt)
+	•	t = 3.8912, p-value = 0.0001093
+	•	p-value < 0.05 → Significant
+✅ Conclusion: Other debts also contribute to loan default risk.
+
+After conducting a T-test, we identified significant predictors (debtinc, creddebt, and othdebt).
+However, we need to check if these predictors are highly correlated (multicollinear), which can negatively impact model performance.
+
+This is where Variance Inflation Factor (VIF) comes in.
+
+⸻
+ What is VIF?
+	•	VIF measures multicollinearity between independent variables.
+	•	A high VIF (> 5 or 10) means a variable is highly correlated with others, leading to redundancy in the model.
+	•	Why is this bad?
+	•	Unstable model coefficients
+	•	Incorrect predictor importance
+	•	Overfitting issues
+	
+```{r}
+client_data$default <- as.numeric(client_data$default)
+vif_model <- lm(default ~ age + ed + employ + address + income + debtinc + creddebt + othdebt, data= client_data)
+
+vif_values <- vif(vif_model)
+print(vif_values)
+```
+
+VIF < 5 → No multicollinearity
+
+### Model Building
+
+Before building a model, we need to split our dataset into two parts:
+
+1️⃣ Training Set (80%) → Used to train the model.
+2️⃣ Testing Set (20%) → Used to evaluate the model’s performance.
+
+When building machine learning models, we need to ensure that:
+	•	The model learns patterns from the training data.
+	•	The model is tested on unseen data (test set) to check its real-world performance.
+	•	This prevents overfitting, where the model memorizes the data instead of generalizing it.
+	
+	Even though we are splitting 80% for training and 20% for testing, the selection of which rows go into train vs. test is random.
+	
+	 Why is Random Splitting Important?
+	•	If we just take the first 80% of rows, we might introduce bias (e.g., all low-income customers might be in training, and high-income ones in testing).
+	•	Random splitting ensures that the training set and test set represent the full dataset fairly.
+	
+	The function set.seed(42) ensures that random processes (like splitting data) always give the same result when you run the code multiple times.
+	•	Without set.seed(): Every time you run the code, a different random split occurs.
+	•	With set.seed(42): The same random split is used, ensuring consistent results.
+
+
+⸻
+```{r}
+set.seed(30) #ensuring reproducibility
+trainIndex <- createDataPartition(client_data$default, p=0.8, list = FALSE)
+trainData <- client_data[trainIndex, ]
+testData <- client_data[-trainIndex, ]
+```
+
+#### Logistic Regression Model
+```{r}
+log_model <- glm(default ~ age + ed + employ + address + debtinc + creddebt + othdebt, data= trainData, family = binomial)
+
+summary(log_model)
+```
+Variable Estimate
+Intercept (-0.3325)
+Baseline log-odds of default when all predictors are 0.
+age (+0.0505)
+Older customers have a slightly higher risk of default (p = 0.009)  Significant.
+ed (+0.1020)
+Education level does not significantly impact default (p = 0.467) Not significant.
+employ (-0.2689)
+More years of employment reduces the probability of default (p < 0.001) Strongly significant.
+address (-0.1443)
+More years at the same address reduces default risk (p < 0.001) Strongly significant.
+debtinc (+0.6634)
+Higher debt-to-income ratio increases default risk (p < 0.001)  Strong predictor.
+creddebt (+1.2475)
+Higher credit-to-debt ratio significantly increases default risk (p < 0.001)  Strong predictor.
+othdebt (-0.1168)
+Other debts do not significantly affect default (p = 0.635)  Not significant.
+
+### Model Retrain by omitting insignificant variables
+
+```{r}
+log_model_updated <- glm(default ~ age + employ + address + debtinc + creddebt, data = trainData, family = binomial)
+
+summary(log_model_updated)
+```
+```{r}
+AIC(log_model)
+AIC(log_model_updated)
+```
+
+New model has the low AIC score which implies that the new model is better.
+
+### Predict on Test Data
+```{r}
+pred_prob <- predict(log_model_updated, testData, type = "response")
+
+cut_off <- 0.5
+pred_class <- ifelse(pred_prob > cut_off, 1 , 0)
+
+pred_class <- as.factor(pred_class)
+```
+
+
+### Model Performance Evaluation using Confusion Matrix
+
+```{r}
+# Convert actual values to factor
+testData$default <- as.factor(testData$default)
+
+# Convert predicted values to factor with same levels
+pred_class <- factor(pred_class, levels = levels(testData$default))
+conf_matrix <- confusionMatrix(pred_class, testData$default, positive ="1")
+
+print(conf_matrix)
+```
+```{r}
+table(trainData$default)
+table(testData$default)
+```
+
+✅ The dataset is imbalanced since the number of defaulters (1) is much higher than non-defaulters (2).
+✅ The model is likely biased towards predicting default (1), which explains why our confusion matrix showed 100% Sensitivity but 0% Specificity (predicting only 1).
+📌 How to Handle Class Imbalance?
+
+1️⃣ Resample the Data (SMOTE or Undersampling/ Oversampling)
+2️⃣ Change Cut-off Threshold (e.g., from 0.5 to 0.3 or 0.4)
+3️⃣ Try a Different Model (Random Forest or Decision Tree)
+
+
+SMOTE (Synthetic Minority Oversampling Technique) generates synthetic examples for the minority class (non-defaulters) to balance the dataset.
+
+```{r}
+# Convert default column to factor
+trainData$default <- as.factor(trainData$default)
+
+# Apply SMOTE (Over-samples minority class, under-samples majority)
+set.seed(30)  # Ensures reproducibility
+trainData_balanced <- ROSE(default ~ ., data = trainData, seed =30)$data
+
+# Check new class distribution
+table(trainData_balanced$default)
+
+# Check new class distribution
+table(trainData_balanced$default)
+```
+ROSE automatically balances the classes by generating synthetic samples.
+
+### Retrain Logistic Regression on Balanced Data
+
+```{r}
+log_model_balanced <- glm(default ~ age + employ + address + debtinc + creddebt , data= trainData_balanced, family = binomial)
+
+summary(log_model_balanced)
+```
+```{r}
+table(trainData$default)
+```
+
+```{r}
+# Predict probabilities
+pred_prob_balanced <- predict(log_model_balanced, testData, type = "response")
+
+# Convert probabilities to class labels using cutoff = 0.5
+pred_class_balanced <- ifelse(pred_prob_balanced > 0.5, 1, 2)  # "2" represents non-defaulter
+
+# Convert to factor
+pred_class_balanced <- as.factor(pred_class_balanced)
+
+# Ensure factor levels match test data
+pred_class_balanced <- factor(pred_class_balanced, levels = levels(testData$default))
+```
+
+```{r}
+# Compute confusion matrix
+conf_matrix_balanced <- confusionMatrix(pred_class_balanced, testData$default, positive = "1")
+
+# Print results
+print(conf_matrix_balanced)
+```
+
+Poor Model Performance, will try decision tree model for further evaluation.
+
+### Decision Tree Classifier Model
+```{r}
+
+tree_model <- rpart(default ~ age + employ + address + debtinc + creddebt, data = trainData, method = "class")
+
+# Predict on test data
+pred_tree <- predict(tree_model, testData, type = "class")
+
+# Evaluate performance
+conf_matrix_tree <- confusionMatrix(pred_tree, testData$default, positive = "1")
+print(conf_matrix_tree)
+```
+Tree model significantly improved accuracy (78.42%) and recall (87.38%). However, specificity (52.78%) is still low, meaning the model struggles to correctly classify non-defaulters. Decision Trees can naturally handle imbalanced datasets without needing SMOTE or ROSE.
+
+```{r}
+colSums(is.na(trainData))
+
+
+```
+
+
+### Random Forest Model
+What is Random Forest?
+
+✅ Random Forest = Many Decision Trees Working Together
+	•	Instead of a single decision tree, it creates multiple decision trees.
+	•	Each tree learns from a random subset of data (called bootstrapping).
+	•	At the end, it aggregates predictions from all trees (majority voting for classification, average for regression).
+
+📌 Key Idea: “A group of weak models together form a strong model.”
+
+✅ Best for Large, Complex Datasets
+	•	Handles missing values well (unlike Logistic Regression).
+	•	Works with both categorical & numerical data.
+	•	Great for imbalanced datasets (it captures rare patterns well).
+	•	Prevents overfitting (due to averaging multiple trees).
+
+🔴 Not Ideal When:
+	•	You need a highly interpretable model (Random Forest is complex).
+	•	The dataset is very small (a simple Decision Tree may work just as well).
+```{r}
+set.seed(30)
+
+rf_model_orignal <- randomForest(default ~ age + employ + address + debtinc + creddebt, data = trainData, ntree = 500, mtry = 3, importance = TRUE)
+
+pred_rf_orignal <- predict(rf_model_orignal, testData)
+
+```
+
+```{r}
+print(pred_rf_orignal)
+```
+
+```{r}
+
+# Evaluate performance
+conf_matrix_rf_original <- confusionMatrix(pred_rf_orignal, testData$default, positive = "1")
+
+# Print results
+print(conf_matrix_rf_original)
+```
+Our Random Forest model outperforms both Decision Tree and Logistic Regression, achieving:
+✅ Higher accuracy (79.86%)
+✅ Strong sensitivity (92.23%) → Great at catching defaulters
+✅ Balanced accuracy of 68.34% → Better than before
+
+### Visualization
+```{r}
+varImpPlot(rf_model_orignal)
+```
+```{r}
+str(pred_rf_orignal)
+
+```
+
+```{r}
+pred_rf_orignal <- as.numeric(pred_rf_orignal)
+
+roc_curve <- roc(testData$default, pred_rf_orignal)
+plot(roc_curve, col="blue", main="ROC Curve - Random Forest Model")
+```
+```{r}
+
+ggplot(data.frame(probability=pred_rf_orignal, default=testData$default), aes(x=probability, fill=factor(default))) +
+  geom_histogram(alpha=0.5, bins=20, position="identity") +
+  labs(title="Predicted Default Probability Distribution", x="Probability of Default", fill="Actual Class") +
+  theme_minimal()
+```
+
